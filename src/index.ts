@@ -77,19 +77,16 @@ function createServer(env: AtlassianEnv) {
 
 export default {
   fetch(request: Request, env: AtlassianEnv, ctx: ExecutionContext) {
-  const authorization = request.headers.get("Authorization") ?? "";
-  const bearerKey = authorization.replace(
-    /^(Bearer|Api-Key)\s+/i,
-    "",
-  );
+    const authorization = request.headers.get("Authorization") ?? "";
 
-  const suppliedKey =
-    request.headers.get("x-api-key") ??
-    bearerKey;
+    const suppliedKey =
+      request.headers.get("x-api-key") ||
+      authorization.replace(/^(Bearer|Api-Key)\s+/i, "");
 
-  if (suppliedKey !== env.MCP_ACCESS_KEY) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+    if (suppliedKey !== env.MCP_ACCESS_KEY) {
+      return new Response("Unauthorized", { status: 401 });
+    }
 
-  return createMcpHandler(() => createServer(env))(request, env, ctx);
-},
+    return createMcpHandler(() => createServer(env))(request, env, ctx);
+  },
+};
