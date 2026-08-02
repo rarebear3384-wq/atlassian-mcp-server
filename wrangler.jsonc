@@ -1,6 +1,12 @@
 {
+  "$schema": "node_modules/wrangler/config-schema.json",
   "name": "atlassian-mcp-server",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "ATLASSIAN_SITE_URL": "https://intercoastalnetdesigns.atlassian.net",
+    "ATLASSIAN_EMAIL": "bmenard@icnd.net"
+  }
 }
