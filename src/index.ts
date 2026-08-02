@@ -1,11 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
-import { z } from "zod";
 
 type AtlassianEnv = {
   ATLASSIAN_SITE_URL: string;
   ATLASSIAN_EMAIL: string;
   ATLASSIAN_API_TOKEN: string;
+  MCP_ACCESS_KEY: string;
 };
 
 function createServer(env: AtlassianEnv) {
@@ -77,6 +77,13 @@ function createServer(env: AtlassianEnv) {
 
 export default {
   fetch(request: Request, env: AtlassianEnv, ctx: ExecutionContext) {
+    const authorization = request.headers.get("Authorization") ?? "";
+    const suppliedKey = authorization.replace(/^Bearer\s+/i, "");
+
+    if (suppliedKey !== env.MCP_ACCESS_KEY) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
     return createMcpHandler(() => createServer(env))(request, env, ctx);
   },
 } satisfies ExportedHandler<AtlassianEnv>;
