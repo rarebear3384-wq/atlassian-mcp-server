@@ -88,14 +88,28 @@ export default {
       );
     }
 
+    if (!env.MCP_ACCESS_KEY) {
+      return new Response("MCP access key is not configured.", {
+        status: 500,
+      });
+    }
+
     const authorization = request.headers.get("Authorization") ?? "";
 
-    const suppliedKey =
+    const suppliedKey = (
       request.headers.get("x-api-key") ||
-      authorization.replace(/^(Bearer|Api-Key)\s+/i, "");
+      request.headers.get("api-key") ||
+      authorization
+    )
+      .replace(/^(Bearer|Api-Key|ApiKey|Token)\s+/i, "")
+      .trim();
 
-    if (suppliedKey !== env.MCP_ACCESS_KEY) {
-      return new Response("Unauthorized", { status: 401 });
+    const expectedKey = env.MCP_ACCESS_KEY.trim();
+
+    if (suppliedKey !== expectedKey) {
+      return new Response("Unauthorized", {
+        status: 401,
+      });
     }
 
     return createMcpHandler(() => createServer(env))(request, env, ctx);
