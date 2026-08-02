@@ -3,22 +3,44 @@ import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 
 type AtlassianEnv = {
-  ATLASSIAN_SITE_URL: string;
-  ATLASSIAN_EMAIL: string;
-  ATLASSIAN_API_TOKEN: string;
-  MCP_ACCESS_KEY: string;
+  ATLASSIAN_SITE_URL?: string;
+  ATLASSIAN_EMAIL?: string;
+  ATLASSIAN_API_TOKEN?: string;
+  MCP_ACCESS_KEY?: string;
 };
+
+function getSiteUrl(env: AtlassianEnv) {
+  const siteUrl = env.ATLASSIAN_SITE_URL?.trim().replace(/\/+$/, "");
+
+  if (!siteUrl) {
+    throw new Error("ATLASSIAN_SITE_URL is missing from the Worker configuration.");
+  }
+
+  return siteUrl;
+}
 
 async function jiraRequest(
   env: AtlassianEnv,
   path: string,
   options: RequestInit = {},
 ) {
+  const siteUrl = getSiteUrl(env);
+
+  if (!env.ATLASSIAN_EMAIL) {
+    throw new Error("ATLASSIAN_EMAIL is missing from the Worker configuration.");
+  }
+
+  if (!env.ATLASSIAN_API_TOKEN) {
+    throw new Error(
+      "ATLASSIAN_API_TOKEN is missing from the Worker configuration.",
+    );
+  }
+
   const credentials = btoa(
     `${env.ATLASSIAN_EMAIL}:${env.ATLASSIAN_API_TOKEN}`,
   );
 
-  const response = await fetch(`${env.ATLASSIAN_SITE_URL}${path}`, {
+  const response = await fetch(`${siteUrl}${path}`, {
     ...options,
     headers: {
       Accept: "application/json",
@@ -30,7 +52,7 @@ async function jiraRequest(
 
   const body = await response.text();
 
-  let data: unknown;
+  let data: any;
 
   try {
     data = body ? JSON.parse(body) : null;
@@ -58,10 +80,22 @@ function textResult(value: unknown) {
   };
 }
 
+function errorResult(error: unknown) {
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text" as const,
+        text: String(error),
+      },
+    ],
+  };
+}
+
 function createServer(env: AtlassianEnv) {
   const server = new McpServer({
     name: "Atlassian MCP",
-    version: "1.1.0",
+    version: "1.2.0",
   });
 
   server.registerTool(
@@ -77,20 +111,12 @@ function createServer(env: AtlassianEnv) {
 
         return textResult({
           connected: true,
-          site: env.ATLASSIAN_SITE_URL,
+          site: getSiteUrl(env),
           displayName: account.displayName,
           accountId: account.accountId,
         });
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: String(error),
-            },
-          ],
-        };
+        return errorResult(error);
       }
     },
   );
@@ -99,7 +125,7 @@ function createServer(env: AtlassianEnv) {
     "jira_list_projects",
     {
       description:
-        "Lists Jira projects the authenticated user can access. Returns compact results and limits output to 25 projects.",
+        "Lists Jira projects the authenticated user can access. Returns no more than 25 projects.",
       inputSchema: {
         maxResults: z
           .number()
@@ -114,7 +140,7 @@ function createServer(env: AtlassianEnv) {
       try {
         const limit = maxResults ?? 25;
 
-        const result = await jiraRequest(
+        const result: any = await jiraRequest(
           env,
           `/rest/api/3/project/search?startAt=0&maxResults=${limit}`,
         );
@@ -137,15 +163,7 @@ function createServer(env: AtlassianEnv) {
           projects,
         });
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: String(error),
-            },
-          ],
-        };
+        return errorResult(error);
       }
     },
   );
@@ -154,13 +172,13 @@ function createServer(env: AtlassianEnv) {
     "jira_search_issues",
     {
       description:
-        "Searches Jira issues using focused JQL. Returns no more than 20 compact issue summaries.",
+        "Searches Jira issues using focused JQL and returns no more than 20 compact results.",
       inputSchema: {
         jql: z
           .string()
           .min(1)
           .describe(
-            "Focused Jira Query Language expression, such as project = ABC ORDER BY updated DESC",
+            "Focused JQL, such as project = ABC ORDER BY updated DESC.",
           ),
         maxResults: z
           .number()
@@ -175,7 +193,7 @@ function createServer(env: AtlassianEnv) {
       try {
         const limit = maxResults ?? 10;
 
-        const result = await jiraRequest(env, "/rest/api/3/search/jql", {
+        const result: any = await jiraRequest(env, "/rest/api/3/search/jql", {
           method: "POST",
           body: JSON.stringify({
             jql,
@@ -227,15 +245,7 @@ function createServer(env: AtlassianEnv) {
           nextPageToken: result.nextPageToken ?? null,
         });
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: String(error),
-            },
-          ],
-        };
+        return errorResult(error);
       }
     },
   );
@@ -244,7 +254,7 @@ function createServer(env: AtlassianEnv) {
     "jira_get_issue",
     {
       description:
-        "Retrieves one Jira issue by key, such as ABC-123. Use this only after identifying the issue key.",
+        "Retrieves one Jira issue by key, such as ABC-123.",
       inputSchema: {
         issueKey: z
           .string()
@@ -256,7 +266,7 @@ function createServer(env: AtlassianEnv) {
       try {
         const encodedIssueKey = encodeURIComponent(issueKey.trim());
 
-        const issue = await jiraRequest(
+        const issue: any = await jiraRequest(
           env,
           `/rest/api/3/issue/${encodedIssueKey}?fields=summary,status,issuetype,project,priority,assignee,reporter,labels,description,created,updated`,
         );
@@ -268,15 +278,7 @@ function createServer(env: AtlassianEnv) {
           fields: issue.fields,
         });
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: String(error),
-            },
-          ],
-        };
+        return errorResult(error);
       }
     },
   );
@@ -290,9 +292,26 @@ export default {
 
     if (url.pathname !== "/mcp") {
       return new Response(
-        "Atlassian MCP server is online. Connect through /mcp.",
+        JSON.stringify(
+          {
+            online: true,
+            message: "Atlassian MCP server is online.",
+            mcpEndpoint: "/mcp",
+            configuration: {
+              siteUrlConfigured: Boolean(env.ATLASSIAN_SITE_URL),
+              emailConfigured: Boolean(env.ATLASSIAN_EMAIL),
+              apiTokenConfigured: Boolean(env.ATLASSIAN_API_TOKEN),
+              accessKeyConfigured: Boolean(env.MCP_ACCESS_KEY),
+            },
+          },
+          null,
+          2,
+        ),
         {
           status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
         },
       );
     }
@@ -313,9 +332,7 @@ export default {
       .replace(/^(Bearer|Api-Key|ApiKey|Token)\s+/i, "")
       .trim();
 
-    const expectedKey = env.MCP_ACCESS_KEY.trim();
-
-    if (suppliedKey !== expectedKey) {
+    if (suppliedKey !== env.MCP_ACCESS_KEY.trim()) {
       return new Response("Unauthorized", {
         status: 401,
       });
