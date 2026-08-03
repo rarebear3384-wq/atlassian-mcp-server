@@ -19,7 +19,7 @@ function getSiteUrl(env: AtlassianEnv) {
   return siteUrl;
 }
 
-async function jiraRequest(
+async function atlassianRequest(
   env: AtlassianEnv,
   path: string,
   options: RequestInit = {},
@@ -59,9 +59,7 @@ async function jiraRequest(
   }
 
   if (!response.ok) {
-    throw new Error(
-      `Atlassian request failed (${response.status}): ${body}`,
-    );
+    throw new Error(`Atlassian request failed (${response.status}): ${body}`);
   }
 
   return data;
@@ -128,7 +126,7 @@ function parseJsonObject(value: string | undefined, fieldName: string) {
   return parsed as Record<string, unknown>;
 }
 
-function toDescriptionDocument(text: string) {
+function jiraDocument(text: string) {
   return {
     type: "doc",
     version: 1,
@@ -146,22 +144,29 @@ function toDescriptionDocument(text: string) {
   };
 }
 
+function confluenceStorageBody(value: string) {
+  return {
+    representation: "storage",
+    value,
+  };
+}
+
 function createServer(env: AtlassianEnv) {
   const server = new McpServer({
     name: "Atlassian MCP",
-    version: "1.3.0",
+    version: "1.4.0",
   });
 
   server.registerTool(
     "atlassian_connection_test",
     {
       description:
-        "Tests the Jira Cloud connection and returns the authenticated Atlassian account.",
+        "Tests the Jira Cloud connection and returns the authenticated account.",
       inputSchema: {},
     },
     async () => {
       try {
-        const account = await jiraRequest(env, "/rest/api/3/myself");
+        const account = await atlassianRequest(env, "/rest/api/3/myself");
 
         return textResult({
           connected: true,
@@ -178,44 +183,46 @@ function createServer(env: AtlassianEnv) {
   server.registerTool(
     "jira_list_projects",
     {
-      description:
-        "Lists Jira projects the authenticated user can access. Returns no more than 25 projects.",
+      description: "Lists Jira projects accessible to the authenticated user.",
       inputSchema: {
-        maxResults: z
-          .number()
-          .int()
-          .min(1)
-          .max(25)
-          .optional()
-          .describe("Maximum number of projects to return. Defaults to 25."),
+        maxResults: z.number().int().min(1).max(25).optional(),
       },
     },
     async ({ maxResults }) => {
       try {
         const limit = maxResults ?? 25;
 
-        const result: any = await jiraRequest(
+        const result: any = await atlassianRequest(
           env,
           `/rest/api/3/project/search?startAt=0&maxResults=${limit}`,
         );
 
-        const projects = Array.isArray(result.values)
-          ? result.values.map((project: any) => ({
-              id: project.id,
-              key: project.key,
-              name: project.name,
-              projectTypeKey: project.projectTypeKey,
-              simplified: project.simplified,
-              style: project.style,
-              self: project.self,
-            }))
-          : [];
-
         return textResult({
-          total: result.total ?? projects.length,
-          returned: projects.length,
-          projects,
+          total: result.total ?? 0,
+          projects: result.values ?? [],
         });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_get_project",
+    {
+      description: "Retrieves metadata for a Jira project.",
+      inputSchema: {
+        projectKey: z.string().min(1),
+      },
+    },
+    async ({ projectKey }) => {
+      try {
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/project/${encodeURIComponent(projectKey.trim())}`,
+        );
+
+        return textResult(result);
       } catch (error) {
         return errorResult(error);
       }
@@ -225,65 +232,42 @@ function createServer(env: AtlassianEnv) {
   server.registerTool(
     "jira_search_issues",
     {
-      description:
-        "Searches Jira issues using focused JQL and returns no more than 20 compact results.",
+      description: "Searches Jira issues using JQL.",
       inputSchema: {
-        jql: z.string().min(1).describe("Focused Jira Query Language expression."),
-        maxResults: z
-          .number()
-          .int()
-          .min(1)
-          .max(20)
-          .optional()
-          .describe("Maximum number of issues to return. Defaults to 10."),
+        jql: z.string().min(1),
+        maxResults: z.number().int().min(1).max(20).optional(),
       },
     },
     async ({ jql, maxResults }) => {
       try {
-        const limit = maxResults ?? 10;
-
-        const result: any = await jiraRequest(env, "/rest/api/3/search/jql", {
-          method: "POST",
-          body: JSON.stringify({
-            jql,
-            maxResults: limit,
-            fields: [
-              "summary",
-              "status",
-              "issuetype",
-              "project",
-              "priority",
-              "assignee",
-              "reporter",
-              "labels",
-              "created",
-              "updated",
-            ],
-          }),
-        });
-
-        const issues = Array.isArray(result.issues)
-          ? result.issues.map((issue: any) => ({
-              id: issue.id,
-              key: issue.key,
-              self: issue.self,
-              summary: issue.fields?.summary,
-              status: issue.fields?.status?.name,
-              issueType: issue.fields?.issuetype?.name,
-              project: issue.fields?.project?.key,
-              priority: issue.fields?.priority?.name,
-              assignee: issue.fields?.assignee?.displayName,
-              reporter: issue.fields?.reporter?.displayName,
-              labels: issue.fields?.labels,
-              created: issue.fields?.created,
-              updated: issue.fields?.updated,
-            }))
-          : [];
+        const result: any = await atlassianRequest(
+          env,
+          "/rest/api/3/search/jql",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              jql,
+              maxResults: maxResults ?? 10,
+              fields: [
+                "summary",
+                "status",
+                "issuetype",
+                "project",
+                "priority",
+                "assignee",
+                "reporter",
+                "labels",
+                "created",
+                "updated",
+              ],
+            }),
+          },
+        );
 
         return textResult({
           jql,
-          returned: issues.length,
-          issues,
+          returned: result.issues?.length ?? 0,
+          issues: result.issues ?? [],
           nextPageToken: result.nextPageToken ?? null,
         });
       } catch (error) {
@@ -295,25 +279,19 @@ function createServer(env: AtlassianEnv) {
   server.registerTool(
     "jira_get_issue",
     {
-      description:
-        "Retrieves one Jira issue by key, such as ABC-123.",
+      description: "Retrieves one Jira issue by key.",
       inputSchema: {
         issueKey: z.string().min(1),
       },
     },
     async ({ issueKey }) => {
       try {
-        const issue: any = await jiraRequest(
+        const result = await atlassianRequest(
           env,
-          `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}?fields=summary,status,issuetype,project,priority,assignee,reporter,labels,description,created,updated`,
+          `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}?fields=*all`,
         );
 
-        return textResult({
-          id: issue.id,
-          key: issue.key,
-          self: issue.self,
-          fields: issue.fields,
-        });
+        return textResult(result);
       } catch (error) {
         return errorResult(error);
       }
@@ -324,16 +302,13 @@ function createServer(env: AtlassianEnv) {
     "jira_create_issue",
     {
       description:
-        "Creates a Jira issue after presenting a preview. Set confirm=true only after the user approves the proposal.",
+        "Creates a Jira issue. Without confirm=true, only returns a preview.",
       inputSchema: {
         projectKey: z.string().min(1),
         summary: z.string().min(1),
-        issueType: z.string().min(1).describe("Example: Task, Story, Bug, or Epic."),
+        issueType: z.string().min(1),
         description: z.string().optional(),
-        additionalFieldsJson: z
-          .string()
-          .optional()
-          .describe("Optional JSON object containing additional Jira fields."),
+        additionalFieldsJson: z.string().optional(),
         confirm: z.boolean().optional(),
       },
     },
@@ -352,29 +327,19 @@ function createServer(env: AtlassianEnv) {
         );
 
         const fields: Record<string, unknown> = {
-          project: {
-            key: projectKey,
-          },
+          project: { key: projectKey },
           summary,
-          issuetype: {
-            name: issueType,
-          },
+          issuetype: { name: issueType },
           ...additionalFields,
         };
 
         if (description) {
-          fields.description = toDescriptionDocument(description);
+          fields.description = jiraDocument(description);
         }
 
         const preview = requireConfirmation(
           "Create Jira issue",
-          {
-            projectKey,
-            summary,
-            issueType,
-            description,
-            fields,
-          },
+          { projectKey, summary, issueType, description, fields },
           confirm,
         );
 
@@ -382,17 +347,20 @@ function createServer(env: AtlassianEnv) {
           return preview;
         }
 
-        const created: any = await jiraRequest(env, "/rest/api/3/issue", {
-          method: "POST",
-          body: JSON.stringify({ fields }),
-        });
+        const result: any = await atlassianRequest(
+          env,
+          "/rest/api/3/issue",
+          {
+            method: "POST",
+            body: JSON.stringify({ fields }),
+          },
+        );
 
         return textResult({
           executed: true,
-          action: "create_issue",
-          issueKey: created.key,
-          issueId: created.id,
-          url: `${getSiteUrl(env)}/browse/${created.key}`,
+          issueKey: result.key,
+          issueId: result.id,
+          url: `${getSiteUrl(env)}/browse/${result.key}`,
         });
       } catch (error) {
         return errorResult(error);
@@ -404,13 +372,10 @@ function createServer(env: AtlassianEnv) {
     "jira_update_issue",
     {
       description:
-        "Updates Jira issue fields after presenting a preview. Set confirm=true only after approval.",
+        "Updates Jira issue fields. Without confirm=true, only returns a preview.",
       inputSchema: {
         issueKey: z.string().min(1),
-        fieldsJson: z
-          .string()
-          .min(2)
-          .describe("JSON object containing Jira fields to update."),
+        fieldsJson: z.string().min(2),
         confirm: z.boolean().optional(),
       },
     },
@@ -420,10 +385,7 @@ function createServer(env: AtlassianEnv) {
 
         const preview = requireConfirmation(
           "Update Jira issue",
-          {
-            issueKey,
-            fields,
-          },
+          { issueKey, fields },
           confirm,
         );
 
@@ -431,7 +393,7 @@ function createServer(env: AtlassianEnv) {
           return preview;
         }
 
-        await jiraRequest(
+        await atlassianRequest(
           env,
           `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}`,
           {
@@ -442,7 +404,6 @@ function createServer(env: AtlassianEnv) {
 
         return textResult({
           executed: true,
-          action: "update_issue",
           issueKey,
           url: `${getSiteUrl(env)}/browse/${issueKey}`,
         });
@@ -456,7 +417,7 @@ function createServer(env: AtlassianEnv) {
     "jira_add_comment",
     {
       description:
-        "Adds a comment to a Jira issue after presenting a preview. Set confirm=true only after approval.",
+        "Adds a Jira issue comment. Without confirm=true, only returns a preview.",
       inputSchema: {
         issueKey: z.string().min(1),
         comment: z.string().min(1),
@@ -467,10 +428,7 @@ function createServer(env: AtlassianEnv) {
       try {
         const preview = requireConfirmation(
           "Add Jira comment",
-          {
-            issueKey,
-            comment,
-          },
+          { issueKey, comment },
           confirm,
         );
 
@@ -478,20 +436,19 @@ function createServer(env: AtlassianEnv) {
           return preview;
         }
 
-        const result: any = await jiraRequest(
+        const result: any = await atlassianRequest(
           env,
           `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}/comment`,
           {
             method: "POST",
             body: JSON.stringify({
-              body: toDescriptionDocument(comment),
+              body: jiraDocument(comment),
             }),
           },
         );
 
         return textResult({
           executed: true,
-          action: "add_comment",
           issueKey,
           commentId: result.id,
         });
@@ -505,7 +462,7 @@ function createServer(env: AtlassianEnv) {
     "jira_assign_issue",
     {
       description:
-        "Assigns a Jira issue to an Atlassian account ID after presenting a preview.",
+        "Assigns a Jira issue. Without confirm=true, only returns a preview.",
       inputSchema: {
         issueKey: z.string().min(1),
         accountId: z.string().min(1),
@@ -516,10 +473,7 @@ function createServer(env: AtlassianEnv) {
       try {
         const preview = requireConfirmation(
           "Assign Jira issue",
-          {
-            issueKey,
-            accountId,
-          },
+          { issueKey, accountId },
           confirm,
         );
 
@@ -527,20 +481,17 @@ function createServer(env: AtlassianEnv) {
           return preview;
         }
 
-        await jiraRequest(
+        await atlassianRequest(
           env,
           `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}/assignee`,
           {
             method: "PUT",
-            body: JSON.stringify({
-              accountId,
-            }),
+            body: JSON.stringify({ accountId }),
           },
         );
 
         return textResult({
           executed: true,
-          action: "assign_issue",
           issueKey,
           accountId,
         });
@@ -553,15 +504,14 @@ function createServer(env: AtlassianEnv) {
   server.registerTool(
     "jira_get_transitions",
     {
-      description:
-        "Lists the workflow transitions currently available for a Jira issue.",
+      description: "Lists workflow transitions available for a Jira issue.",
       inputSchema: {
         issueKey: z.string().min(1),
       },
     },
     async ({ issueKey }) => {
       try {
-        const result: any = await jiraRequest(
+        const result: any = await atlassianRequest(
           env,
           `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}/transitions`,
         );
@@ -580,7 +530,7 @@ function createServer(env: AtlassianEnv) {
     "jira_transition_issue",
     {
       description:
-        "Transitions a Jira issue after presenting a preview. Use jira_get_transitions first.",
+        "Transitions a Jira issue. Without confirm=true, only returns a preview.",
       inputSchema: {
         issueKey: z.string().min(1),
         transitionId: z.string().min(1),
@@ -591,10 +541,7 @@ function createServer(env: AtlassianEnv) {
       try {
         const preview = requireConfirmation(
           "Transition Jira issue",
-          {
-            issueKey,
-            transitionId,
-          },
+          { issueKey, transitionId },
           confirm,
         );
 
@@ -602,22 +549,19 @@ function createServer(env: AtlassianEnv) {
           return preview;
         }
 
-        await jiraRequest(
+        await atlassianRequest(
           env,
           `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}/transitions`,
           {
             method: "POST",
             body: JSON.stringify({
-              transition: {
-                id: transitionId,
-              },
+              transition: { id: transitionId },
             }),
           },
         );
 
         return textResult({
           executed: true,
-          action: "transition_issue",
           issueKey,
           transitionId,
         });
@@ -631,14 +575,11 @@ function createServer(env: AtlassianEnv) {
     "jira_link_issues",
     {
       description:
-        "Links two Jira issues after presenting a preview. Set confirm=true only after approval.",
+        "Links two Jira issues. Without confirm=true, only returns a preview.",
       inputSchema: {
         inwardIssueKey: z.string().min(1),
         outwardIssueKey: z.string().min(1),
-        linkType: z
-          .string()
-          .min(1)
-          .describe("Example: Blocks, Relates, Cloners, or Duplicate."),
+        linkType: z.string().min(1),
         confirm: z.boolean().optional(),
       },
     },
@@ -651,11 +592,7 @@ function createServer(env: AtlassianEnv) {
       try {
         const preview = requireConfirmation(
           "Link Jira issues",
-          {
-            inwardIssueKey,
-            outwardIssueKey,
-            linkType,
-          },
+          { inwardIssueKey, outwardIssueKey, linkType },
           confirm,
         );
 
@@ -663,24 +600,17 @@ function createServer(env: AtlassianEnv) {
           return preview;
         }
 
-        await jiraRequest(env, "/rest/api/3/issueLink", {
+        await atlassianRequest(env, "/rest/api/3/issueLink", {
           method: "POST",
           body: JSON.stringify({
-            type: {
-              name: linkType,
-            },
-            inwardIssue: {
-              key: inwardIssueKey,
-            },
-            outwardIssue: {
-              key: outwardIssueKey,
-            },
+            type: { name: linkType },
+            inwardIssue: { key: inwardIssueKey },
+            outwardIssue: { key: outwardIssueKey },
           }),
         });
 
         return textResult({
           executed: true,
-          action: "link_issues",
           inwardIssueKey,
           outwardIssueKey,
           linkType,
@@ -694,50 +624,17 @@ function createServer(env: AtlassianEnv) {
   server.registerTool(
     "jira_list_fields",
     {
-      description:
-        "Lists Jira fields and custom field IDs. Useful before updating custom fields or Jira Product Discovery ideas.",
+      description: "Lists Jira fields and custom field IDs.",
       inputSchema: {},
     },
     async () => {
       try {
-        const fields: any = await jiraRequest(env, "/rest/api/3/field");
-
-        const compactFields = Array.isArray(fields)
-          ? fields.map((field: any) => ({
-              id: field.id,
-              name: field.name,
-              custom: field.custom,
-              schema: field.schema,
-            }))
-          : [];
+        const fields: any = await atlassianRequest(env, "/rest/api/3/field");
 
         return textResult({
-          returned: compactFields.length,
-          fields: compactFields,
+          returned: fields?.length ?? 0,
+          fields: fields ?? [],
         });
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
-  );
-
-  server.registerTool(
-    "jira_get_project",
-    {
-      description:
-        "Retrieves configuration and metadata for one Jira project.",
-      inputSchema: {
-        projectKey: z.string().min(1),
-      },
-    },
-    async ({ projectKey }) => {
-      try {
-        const project: any = await jiraRequest(
-          env,
-          `/rest/api/3/project/${encodeURIComponent(projectKey.trim())}`,
-        );
-
-        return textResult(project);
       } catch (error) {
         return errorResult(error);
       }
@@ -747,30 +644,22 @@ function createServer(env: AtlassianEnv) {
   server.registerTool(
     "jira_list_boards",
     {
-      description:
-        "Lists Jira Software boards visible to the authenticated user. Returns no more than 25.",
+      description: "Lists Jira Software boards.",
       inputSchema: {
-        maxResults: z
-          .number()
-          .int()
-          .min(1)
-          .max(25)
-          .optional()
-          .describe("Maximum number of boards to return. Defaults to 25."),
+        maxResults: z.number().int().min(1).max(25).optional(),
       },
     },
     async ({ maxResults }) => {
       try {
         const limit = maxResults ?? 25;
 
-        const result: any = await jiraRequest(
+        const result: any = await atlassianRequest(
           env,
           `/rest/agile/1.0/board?startAt=0&maxResults=${limit}`,
         );
 
         return textResult({
-          total: result.total ?? result.values?.length ?? 0,
-          returned: result.values?.length ?? 0,
+          total: result.total ?? 0,
           boards: result.values ?? [],
         });
       } catch (error) {
@@ -782,32 +671,361 @@ function createServer(env: AtlassianEnv) {
   server.registerTool(
     "jira_list_sprints",
     {
-      description:
-        "Lists sprints for a Jira Software board. Returns no more than 25.",
+      description: "Lists sprints for a Jira Software board.",
       inputSchema: {
         boardId: z.number().int().positive(),
-        maxResults: z
-          .number()
-          .int()
-          .min(1)
-          .max(25)
-          .optional()
-          .describe("Maximum number of sprints to return. Defaults to 25."),
+        maxResults: z.number().int().min(1).max(25).optional(),
       },
     },
     async ({ boardId, maxResults }) => {
       try {
         const limit = maxResults ?? 25;
 
-        const result: any = await jiraRequest(
+        const result: any = await atlassianRequest(
           env,
           `/rest/agile/1.0/board/${boardId}/sprint?startAt=0&maxResults=${limit}`,
         );
 
         return textResult({
-          total: result.total ?? result.values?.length ?? 0,
-          returned: result.values?.length ?? 0,
+          total: result.total ?? 0,
           sprints: result.values ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "confluence_list_spaces",
+    {
+      description: "Lists Confluence spaces accessible to the authenticated user.",
+      inputSchema: {
+        maxResults: z.number().int().min(1).max(50).optional(),
+      },
+    },
+    async ({ maxResults }) => {
+      try {
+        const limit = maxResults ?? 25;
+
+        const result: any = await atlassianRequest(
+          env,
+          `/wiki/rest/api/space?limit=${limit}`,
+        );
+
+        return textResult({
+          total: result.size ?? result.results?.length ?? 0,
+          spaces: result.results ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "confluence_search",
+    {
+      description:
+        "Searches Confluence using CQL. Example: type=page AND text~\"release plan\".",
+      inputSchema: {
+        cql: z.string().min(1),
+        maxResults: z.number().int().min(1).max(25).optional(),
+      },
+    },
+    async ({ cql, maxResults }) => {
+      try {
+        const limit = maxResults ?? 10;
+
+        const result: any = await atlassianRequest(
+          env,
+          `/wiki/rest/api/content/search?cql=${encodeURIComponent(
+            cql,
+          )}&limit=${limit}&expand=space,version`,
+        );
+
+        return textResult({
+          cql,
+          returned: result.results?.length ?? 0,
+          results: result.results ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "confluence_get_page",
+    {
+      description: "Retrieves a Confluence page including its storage content.",
+      inputSchema: {
+        pageId: z.string().min(1),
+      },
+    },
+    async ({ pageId }) => {
+      try {
+        const page = await atlassianRequest(
+          env,
+          `/wiki/rest/api/content/${encodeURIComponent(
+            pageId,
+          )}?expand=body.storage,space,version,ancestors`,
+        );
+
+        return textResult(page);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "confluence_list_child_pages",
+    {
+      description: "Lists child pages beneath a Confluence page.",
+      inputSchema: {
+        pageId: z.string().min(1),
+        maxResults: z.number().int().min(1).max(50).optional(),
+      },
+    },
+    async ({ pageId, maxResults }) => {
+      try {
+        const limit = maxResults ?? 25;
+
+        const result: any = await atlassianRequest(
+          env,
+          `/wiki/rest/api/content/${encodeURIComponent(
+            pageId,
+          )}/child/page?limit=${limit}&expand=space,version`,
+        );
+
+        return textResult({
+          returned: result.results?.length ?? 0,
+          pages: result.results ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "confluence_get_page_versions",
+    {
+      description: "Retrieves version history for a Confluence page.",
+      inputSchema: {
+        pageId: z.string().min(1),
+        maxResults: z.number().int().min(1).max(50).optional(),
+      },
+    },
+    async ({ pageId, maxResults }) => {
+      try {
+        const limit = maxResults ?? 25;
+
+        const result: any = await atlassianRequest(
+          env,
+          `/wiki/rest/api/content/${encodeURIComponent(
+            pageId,
+          )}/version?limit=${limit}`,
+        );
+
+        return textResult({
+          returned: result.results?.length ?? 0,
+          versions: result.results ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "confluence_create_page",
+    {
+      description:
+        "Creates a Confluence page. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        spaceKey: z.string().min(1),
+        title: z.string().min(1),
+        bodyStorageHtml: z.string().min(1),
+        parentPageId: z.string().optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({
+      spaceKey,
+      title,
+      bodyStorageHtml,
+      parentPageId,
+      confirm,
+    }) => {
+      try {
+        const payload: Record<string, unknown> = {
+          type: "page",
+          title,
+          space: { key: spaceKey },
+          body: {
+            storage: confluenceStorageBody(bodyStorageHtml),
+          },
+        };
+
+        if (parentPageId) {
+          payload.ancestors = [{ id: parentPageId }];
+        }
+
+        const preview = requireConfirmation(
+          "Create Confluence page",
+          {
+            spaceKey,
+            title,
+            parentPageId,
+            bodyStorageHtml,
+          },
+          confirm,
+        );
+
+        if (preview) {
+          return preview;
+        }
+
+        const result: any = await atlassianRequest(
+          env,
+          "/wiki/rest/api/content",
+          {
+            method: "POST",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          pageId: result.id,
+          title: result.title,
+          url: `${getSiteUrl(env)}/wiki${result._links?.webui ?? ""}`,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "confluence_update_page",
+    {
+      description:
+        "Updates a Confluence page. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        pageId: z.string().min(1),
+        title: z.string().min(1),
+        bodyStorageHtml: z.string().min(1),
+        currentVersion: z.number().int().positive(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({
+      pageId,
+      title,
+      bodyStorageHtml,
+      currentVersion,
+      confirm,
+    }) => {
+      try {
+        const payload = {
+          version: {
+            number: currentVersion + 1,
+          },
+          title,
+          type: "page",
+          body: {
+            storage: confluenceStorageBody(bodyStorageHtml),
+          },
+        };
+
+        const preview = requireConfirmation(
+          "Update Confluence page",
+          {
+            pageId,
+            title,
+            currentVersion,
+            newVersion: currentVersion + 1,
+          },
+          confirm,
+        );
+
+        if (preview) {
+          return preview;
+        }
+
+        const result: any = await atlassianRequest(
+          env,
+          `/wiki/rest/api/content/${encodeURIComponent(pageId)}`,
+          {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          pageId: result.id,
+          title: result.title,
+          version: result.version?.number,
+          url: `${getSiteUrl(env)}/wiki${result._links?.webui ?? ""}`,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "confluence_add_comment",
+    {
+      description:
+        "Adds a comment to a Confluence page. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        pageId: z.string().min(1),
+        comment: z.string().min(1),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ pageId, comment, confirm }) => {
+      try {
+        const preview = requireConfirmation(
+          "Add Confluence page comment",
+          {
+            pageId,
+            comment,
+          },
+          confirm,
+        );
+
+        if (preview) {
+          return preview;
+        }
+
+        const result: any = await atlassianRequest(
+          env,
+          "/wiki/rest/api/content",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              type: "comment",
+              container: {
+                type: "page",
+                id: pageId,
+              },
+              body: {
+                storage: confluenceStorageBody(comment),
+              },
+            }),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          commentId: result.id,
+          pageId,
         });
       } catch (error) {
         return errorResult(error);
