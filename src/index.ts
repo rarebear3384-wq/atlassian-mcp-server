@@ -1033,6 +1033,520 @@ function createServer(env: AtlassianEnv) {
     },
   );
 
+
+  server.registerTool(
+    "jira_get_issue_changelog",
+    {
+      description: "Retrieves the change history for a Jira issue.",
+      inputSchema: {
+        issueKey: z.string().min(1),
+        maxResults: z.number().int().min(1).max(100).optional(),
+      },
+    },
+    async ({ issueKey, maxResults }) => {
+      try {
+        const limit = maxResults ?? 50;
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/issue/${encodeURIComponent(
+            issueKey.trim(),
+          )}?expand=changelog&fields=summary,status`,
+        );
+
+        return textResult({
+          issueKey,
+          summary: result.fields?.summary,
+          status: result.fields?.status,
+          total: result.changelog?.total ?? 0,
+          histories: (result.changelog?.histories ?? []).slice(0, limit),
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_get_worklogs",
+    {
+      description: "Lists worklogs recorded against a Jira issue.",
+      inputSchema: {
+        issueKey: z.string().min(1),
+        maxResults: z.number().int().min(1).max(100).optional(),
+      },
+    },
+    async ({ issueKey, maxResults }) => {
+      try {
+        const limit = maxResults ?? 50;
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/issue/${encodeURIComponent(
+            issueKey.trim(),
+          )}/worklog?maxResults=${limit}`,
+        );
+
+        return textResult({
+          issueKey,
+          total: result.total ?? 0,
+          worklogs: result.worklogs ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_add_worklog",
+    {
+      description:
+        "Adds worklog time to a Jira issue. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        issueKey: z.string().min(1),
+        timeSpent: z.string().min(1).describe("Example: 1h 30m."),
+        started: z.string().optional().describe("ISO timestamp."),
+        comment: z.string().optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ issueKey, timeSpent, started, comment, confirm }) => {
+      try {
+        const payload: Record<string, unknown> = { timeSpent };
+
+        if (started) payload.started = started;
+        if (comment) payload.comment = jiraDocument(comment);
+
+        const preview = requireConfirmation(
+          "Add Jira worklog",
+          { issueKey, timeSpent, started, comment },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        const result: any = await atlassianRequest(
+          env,
+          `/rest/api/3/issue/${encodeURIComponent(
+            issueKey.trim(),
+          )}/worklog`,
+          {
+            method: "POST",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          issueKey,
+          worklogId: result.id,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_list_attachments",
+    {
+      description: "Lists attachment metadata for a Jira issue.",
+      inputSchema: {
+        issueKey: z.string().min(1),
+      },
+    },
+    async ({ issueKey }) => {
+      try {
+        const result: any = await atlassianRequest(
+          env,
+          `/rest/api/3/issue/${encodeURIComponent(
+            issueKey.trim(),
+          )}?fields=attachment`,
+        );
+
+        return textResult({
+          issueKey,
+          attachments: result.fields?.attachment ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_delete_attachment",
+    {
+      description:
+        "Deletes a Jira attachment. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        attachmentId: z.string().min(1),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ attachmentId, confirm }) => {
+      try {
+        const preview = requireConfirmation(
+          "Delete Jira attachment",
+          { attachmentId },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        await atlassianRequest(
+          env,
+          `/rest/api/3/attachment/${encodeURIComponent(attachmentId)}`,
+          { method: "DELETE" },
+        );
+
+        return textResult({
+          executed: true,
+          attachmentId,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_list_versions",
+    {
+      description: "Lists releases and versions for a Jira project.",
+      inputSchema: {
+        projectKey: z.string().min(1),
+      },
+    },
+    async ({ projectKey }) => {
+      try {
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/project/${encodeURIComponent(
+            projectKey.trim(),
+          )}/versions`,
+        );
+
+        return textResult({
+          projectKey,
+          versions: result ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_create_version",
+    {
+      description:
+        "Creates a Jira release/version. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        projectId: z.string().min(1),
+        name: z.string().min(1),
+        description: z.string().optional(),
+        releaseDate: z.string().optional().describe("YYYY-MM-DD."),
+        released: z.boolean().optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({
+      projectId,
+      name,
+      description,
+      releaseDate,
+      released,
+      confirm,
+    }) => {
+      try {
+        const payload: Record<string, unknown> = {
+          project: projectId,
+          name,
+          released: released ?? false,
+        };
+
+        if (description) payload.description = description;
+        if (releaseDate) payload.releaseDate = releaseDate;
+
+        const preview = requireConfirmation(
+          "Create Jira version",
+          payload,
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        const result = await atlassianRequest(
+          env,
+          "/rest/api/3/version",
+          {
+            method: "POST",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          version: result,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_list_components",
+    {
+      description: "Lists components for a Jira project.",
+      inputSchema: {
+        projectKey: z.string().min(1),
+      },
+    },
+    async ({ projectKey }) => {
+      try {
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/project/${encodeURIComponent(
+            projectKey.trim(),
+          )}/components`,
+        );
+
+        return textResult({
+          projectKey,
+          components: result ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_create_component",
+    {
+      description:
+        "Creates a Jira project component. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        projectId: z.string().min(1),
+        name: z.string().min(1),
+        description: z.string().optional(),
+        leadAccountId: z.string().optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({
+      projectId,
+      name,
+      description,
+      leadAccountId,
+      confirm,
+    }) => {
+      try {
+        const payload: Record<string, unknown> = {
+          project: projectId,
+          name,
+        };
+
+        if (description) payload.description = description;
+        if (leadAccountId) payload.leadAccountId = leadAccountId;
+
+        const preview = requireConfirmation(
+          "Create Jira component",
+          payload,
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        const result = await atlassianRequest(
+          env,
+          "/rest/api/3/component",
+          {
+            method: "POST",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          component: result,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_get_board_issues",
+    {
+      description: "Lists issues on a Jira Software board.",
+      inputSchema: {
+        boardId: z.number().int().positive(),
+        maxResults: z.number().int().min(1).max(50).optional(),
+      },
+    },
+    async ({ boardId, maxResults }) => {
+      try {
+        const limit = maxResults ?? 25;
+        const result = await atlassianRequest(
+          env,
+          `/rest/agile/1.0/board/${boardId}/issue?maxResults=${limit}`,
+        );
+
+        return textResult({
+          boardId,
+          total: result.total ?? 0,
+          issues: result.issues ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_move_issues_to_backlog",
+    {
+      description:
+        "Moves Jira issues to the backlog. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        issueKeys: z.array(z.string().min(1)).min(1).max(50),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ issueKeys, confirm }) => {
+      try {
+        const preview = requireConfirmation(
+          "Move Jira issues to backlog",
+          { issueKeys },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        await atlassianRequest(env, "/rest/agile/1.0/backlog/issue", {
+          method: "POST",
+          body: JSON.stringify({ issues: issueKeys }),
+        });
+
+        return textResult({
+          executed: true,
+          issueKeys,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_add_issues_to_sprint",
+    {
+      description:
+        "Adds Jira issues to a sprint. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        sprintId: z.number().int().positive(),
+        issueKeys: z.array(z.string().min(1)).min(1).max(50),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ sprintId, issueKeys, confirm }) => {
+      try {
+        const preview = requireConfirmation(
+          "Add Jira issues to sprint",
+          { sprintId, issueKeys },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        await atlassianRequest(
+          env,
+          `/rest/agile/1.0/sprint/${sprintId}/issue`,
+          {
+            method: "POST",
+            body: JSON.stringify({ issues: issueKeys }),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          sprintId,
+          issueKeys,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jpd_list_ideas",
+    {
+      description:
+        "Lists recent Jira Product Discovery ideas. Defaults to the TOPS project.",
+      inputSchema: {
+        projectKey: z.string().min(1).optional(),
+        maxResults: z.number().int().min(1).max(25).optional(),
+      },
+    },
+    async ({ projectKey, maxResults }) => {
+      try {
+        const key = projectKey ?? "TOPS";
+        const limit = maxResults ?? 10;
+        const result: any = await atlassianRequest(
+          env,
+          "/rest/api/3/search/jql",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              jql: `project = "${key}" ORDER BY updated DESC`,
+              maxResults: limit,
+              fields: ["summary", "status", "issuetype", "project", "priority", "labels", "created", "updated"],
+            }),
+          },
+        );
+
+        return textResult({
+          projectKey: key,
+          returned: result.issues?.length ?? 0,
+          ideas: result.issues ?? [],
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jpd_get_idea_fields",
+    {
+      description:
+        "Retrieves all fields and current values for a Jira Product Discovery idea.",
+      inputSchema: {
+        issueKey: z.string().min(1),
+      },
+    },
+    async ({ issueKey }) => {
+      try {
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}?fields=*all`,
+        );
+
+        return textResult({
+          issueKey,
+          fields: result.fields ?? {},
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+
   return server;
 }
 
@@ -1091,3 +1605,4 @@ export default {
     return createMcpHandler(() => createServer(env))(request, env, ctx);
   },
 };
+
