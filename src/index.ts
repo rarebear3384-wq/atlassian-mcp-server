@@ -1547,6 +1547,488 @@ function createServer(env: AtlassianEnv) {
   );
 
 
+
+  server.registerTool(
+    "jira_delete_issue",
+    {
+      description:
+        "Deletes a Jira issue. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        issueKey: z.string().min(1),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ issueKey, confirm }) => {
+      try {
+        const preview = requireConfirmation(
+          "Delete Jira issue",
+          { issueKey },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        await atlassianRequest(
+          env,
+          `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}`,
+          { method: "DELETE" },
+        );
+
+        return textResult({
+          executed: true,
+          issueKey,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_get_sprint",
+    {
+      description: "Retrieves details for a Jira sprint.",
+      inputSchema: {
+        sprintId: z.number().int().positive(),
+      },
+    },
+    async ({ sprintId }) => {
+      try {
+        const result = await atlassianRequest(
+          env,
+          `/rest/agile/1.0/sprint/${sprintId}`,
+        );
+
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_create_sprint",
+    {
+      description:
+        "Creates a Jira sprint. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        name: z.string().min(1),
+        boardId: z.number().int().positive(),
+        goal: z.string().optional(),
+        startDate: z.string().optional(),
+        endDate: z.string().optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ name, boardId, goal, startDate, endDate, confirm }) => {
+      try {
+        const payload: Record<string, unknown> = {
+          name,
+          originBoardId: boardId,
+        };
+
+        if (goal) payload.goal = goal;
+        if (startDate) payload.startDate = startDate;
+        if (endDate) payload.endDate = endDate;
+
+        const preview = requireConfirmation(
+          "Create Jira sprint",
+          payload,
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        const result = await atlassianRequest(
+          env,
+          "/rest/agile/1.0/sprint",
+          {
+            method: "POST",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          sprint: result,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_update_sprint",
+    {
+      description:
+        "Updates a Jira sprint. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        sprintId: z.number().int().positive(),
+        name: z.string().min(1).optional(),
+        goal: z.string().optional(),
+        startDate: z.string().optional(),
+        endDate: z.string().optional(),
+        state: z.enum(["future", "active", "closed"]).optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({
+      sprintId,
+      name,
+      goal,
+      startDate,
+      endDate,
+      state,
+      confirm,
+    }) => {
+      try {
+        const payload: Record<string, unknown> = {};
+
+        if (name !== undefined) payload.name = name;
+        if (goal !== undefined) payload.goal = goal;
+        if (startDate !== undefined) payload.startDate = startDate;
+        if (endDate !== undefined) payload.endDate = endDate;
+        if (state !== undefined) payload.state = state;
+
+        const preview = requireConfirmation(
+          "Update Jira sprint",
+          { sprintId, ...payload },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        const result = await atlassianRequest(
+          env,
+          `/rest/agile/1.0/sprint/${sprintId}`,
+          {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          sprint: result,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_list_issue_types_for_project",
+    {
+      description: "Lists issue types available for a Jira project.",
+      inputSchema: {
+        projectKey: z.string().min(1),
+      },
+    },
+    async ({ projectKey }) => {
+      try {
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/issue/createmeta/${encodeURIComponent(
+            projectKey.trim(),
+          )}/issuetypes`,
+        );
+
+        return textResult({
+          projectKey,
+          issueTypes: result,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_get_project_permissions",
+    {
+      description:
+        "Checks the authenticated user's Jira permissions for a project.",
+      inputSchema: {
+        projectKey: z.string().min(1),
+      },
+    },
+    async ({ projectKey }) => {
+      try {
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/mypermissions?projectKey=${encodeURIComponent(
+            projectKey.trim(),
+          )}`,
+        );
+
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_list_project_roles",
+    {
+      description: "Lists project roles and their assigned members.",
+      inputSchema: {
+        projectKey: z.string().min(1),
+      },
+    },
+    async ({ projectKey }) => {
+      try {
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/project/${encodeURIComponent(
+            projectKey.trim(),
+          )}/role`,
+        );
+
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_update_version",
+    {
+      description:
+        "Updates a Jira release/version. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        versionId: z.string().min(1),
+        name: z.string().min(1).optional(),
+        description: z.string().optional(),
+        releaseDate: z.string().optional(),
+        released: z.boolean().optional(),
+        archived: z.boolean().optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({
+      versionId,
+      name,
+      description,
+      releaseDate,
+      released,
+      archived,
+      confirm,
+    }) => {
+      try {
+        const payload: Record<string, unknown> = {};
+
+        if (name !== undefined) payload.name = name;
+        if (description !== undefined) payload.description = description;
+        if (releaseDate !== undefined) payload.releaseDate = releaseDate;
+        if (released !== undefined) payload.released = released;
+        if (archived !== undefined) payload.archived = archived;
+
+        const preview = requireConfirmation(
+          "Update Jira version",
+          { versionId, ...payload },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/version/${encodeURIComponent(versionId)}`,
+          {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          version: result,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_delete_version",
+    {
+      description:
+        "Deletes a Jira release/version. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        versionId: z.string().min(1),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ versionId, confirm }) => {
+      try {
+        const preview = requireConfirmation(
+          "Delete Jira version",
+          { versionId },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        await atlassianRequest(
+          env,
+          `/rest/api/3/version/${encodeURIComponent(versionId)}`,
+          { method: "DELETE" },
+        );
+
+        return textResult({
+          executed: true,
+          versionId,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_update_component",
+    {
+      description:
+        "Updates a Jira component. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        componentId: z.string().min(1),
+        name: z.string().min(1).optional(),
+        description: z.string().optional(),
+        leadAccountId: z.string().optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({
+      componentId,
+      name,
+      description,
+      leadAccountId,
+      confirm,
+    }) => {
+      try {
+        const payload: Record<string, unknown> = {};
+
+        if (name !== undefined) payload.name = name;
+        if (description !== undefined) payload.description = description;
+        if (leadAccountId !== undefined) {
+          payload.leadAccountId = leadAccountId;
+        }
+
+        const preview = requireConfirmation(
+          "Update Jira component",
+          { componentId, ...payload },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        const result = await atlassianRequest(
+          env,
+          `/rest/api/3/component/${encodeURIComponent(componentId)}`,
+          {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          component: result,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jira_delete_component",
+    {
+      description:
+        "Deletes a Jira component. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        componentId: z.string().min(1),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ componentId, confirm }) => {
+      try {
+        const preview = requireConfirmation(
+          "Delete Jira component",
+          { componentId },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        await atlassianRequest(
+          env,
+          `/rest/api/3/component/${encodeURIComponent(componentId)}`,
+          { method: "DELETE" },
+        );
+
+        return textResult({
+          executed: true,
+          componentId,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jpd_update_fields",
+    {
+      description:
+        "Updates JPD scoring or other custom fields. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        issueKey: z.string().min(1),
+        fieldsJson: z
+          .string()
+          .min(2)
+          .describe("JSON object using the exact JPD custom field IDs."),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ issueKey, fieldsJson, confirm }) => {
+      try {
+        const fields = parseJsonObject(fieldsJson, "fieldsJson");
+
+        const preview = requireConfirmation(
+          "Update Jira Product Discovery fields",
+          { issueKey, fields },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        await atlassianRequest(
+          env,
+          `/rest/api/3/issue/${encodeURIComponent(issueKey.trim())}`,
+          {
+            method: "PUT",
+            body: JSON.stringify({ fields }),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          issueKey,
+          url: `${getSiteUrl(env)}/browse/${issueKey}`,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+
   return server;
 }
 
@@ -1605,4 +2087,6 @@ export default {
     return createMcpHandler(() => createServer(env))(request, env, ctx);
   },
 };
+
+
 
