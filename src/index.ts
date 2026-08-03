@@ -7,6 +7,8 @@ type AtlassianEnv = {
   ATLASSIAN_EMAIL?: string;
   ATLASSIAN_API_TOKEN?: string;
   MCP_ACCESS_KEY?: string;
+  ATLASSIAN_ORG_ID?: string;
+  ATLASSIAN_ADMIN_API_KEY?: string;
 };
 
 function getSiteUrl(env: AtlassianEnv) {
@@ -149,6 +151,98 @@ function confluenceStorageBody(value: string) {
     representation: "storage",
     value,
   };
+}
+
+
+async function adminRequest(
+  env: AtlassianEnv,
+  path: string,
+  options: RequestInit = {},
+) {
+  const orgId = env.ATLASSIAN_ORG_ID?.trim();
+
+  if (!orgId) {
+    throw new Error("ATLASSIAN_ORG_ID is missing.");
+  }
+
+  if (!env.ATLASSIAN_ADMIN_API_KEY?.trim()) {
+    throw new Error("ATLASSIAN_ADMIN_API_KEY is missing.");
+  }
+
+  const response = await fetch(
+    `https://api.atlassian.com/admin/v1${path}`,
+    {
+      ...options,
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${env.ATLASSIAN_ADMIN_API_KEY.trim()}`,
+        "Content-Type": "application/json",
+        ...(options.headers ?? {}),
+      },
+    },
+  );
+
+  const body = await response.text();
+
+  let data: any;
+
+  try {
+    data = body ? JSON.parse(body) : null;
+  } catch {
+    data = body;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Atlassian admin request failed (${response.status}): ${body}`);
+  }
+
+  return data;
+}
+
+async function apiAccessRequest(
+  env: AtlassianEnv,
+  path: string,
+  options: RequestInit = {},
+) {
+  const orgId = env.ATLASSIAN_ORG_ID?.trim();
+
+  if (!orgId) {
+    throw new Error("ATLASSIAN_ORG_ID is missing.");
+  }
+
+  if (!env.ATLASSIAN_ADMIN_API_KEY?.trim()) {
+    throw new Error("ATLASSIAN_ADMIN_API_KEY is missing.");
+  }
+
+  const response = await fetch(
+    `https://api.atlassian.com/admin/api-access/v1${path}`,
+    {
+      ...options,
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${env.ATLASSIAN_ADMIN_API_KEY.trim()}`,
+        "Content-Type": "application/json",
+        ...(options.headers ?? {}),
+      },
+    },
+  );
+
+  const body = await response.text();
+  let data: any;
+
+  try {
+    data = body ? JSON.parse(body) : null;
+  } catch {
+    data = body;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Atlassian API access request failed (${response.status}): ${body}`,
+    );
+  }
+
+  return data;
 }
 
 function createServer(env: AtlassianEnv) {
@@ -2029,6 +2123,221 @@ function createServer(env: AtlassianEnv) {
   );
 
 
+
+  server.registerTool(
+    "admin_get_organization",
+    {
+      description: "Retrieves the Atlassian organization associated with the configured organization ID.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const orgId = env.ATLASSIAN_ORG_ID?.trim();
+
+        if (!orgId) throw new Error("ATLASSIAN_ORG_ID is missing.");
+
+        const result = await adminRequest(env, `/orgs/${encodeURIComponent(orgId)}`);
+
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "admin_list_organizations",
+    {
+      description: "Lists Atlassian organizations accessible to the admin API key.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const result = await adminRequest(env, "/orgs");
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "admin_search_users",
+    {
+      description: "Searches users in the Atlassian organization.",
+      inputSchema: {
+        query: z.string().optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      },
+    },
+    async ({ query, limit }) => {
+      try {
+        const orgId = env.ATLASSIAN_ORG_ID?.trim();
+
+        if (!orgId) throw new Error("ATLASSIAN_ORG_ID is missing.");
+
+        const result = await adminRequest(
+          env,
+          `/orgs/${encodeURIComponent(orgId)}/directory/users/search`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              query: query ?? "",
+              limit: limit ?? 25,
+            }),
+          },
+        );
+
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "admin_list_domains",
+    {
+      description: "Lists domains associated with the Atlassian organization.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const orgId = env.ATLASSIAN_ORG_ID?.trim();
+
+        if (!orgId) throw new Error("ATLASSIAN_ORG_ID is missing.");
+
+        const result = await adminRequest(
+          env,
+          `/orgs/${encodeURIComponent(orgId)}/domains`,
+        );
+
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "admin_list_audit_events",
+    {
+      description: "Retrieves organization audit events. Keep limits small because Atlassian rate-limits this API.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(50).optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        action: z.string().optional(),
+      },
+    },
+    async ({ limit, from, to, action }) => {
+      try {
+        const orgId = env.ATLASSIAN_ORG_ID?.trim();
+
+        if (!orgId) throw new Error("ATLASSIAN_ORG_ID is missing.");
+
+        const params = new URLSearchParams();
+        params.set("limit", String(limit ?? 25));
+        if (from) params.set("from", from);
+        if (to) params.set("to", to);
+        if (action) params.set("action", action);
+
+        const result = await adminRequest(
+          env,
+          `/orgs/${encodeURIComponent(orgId)}/events?${params.toString()}`,
+        );
+
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "admin_list_api_token_activity",
+    {
+      description: "Lists managed-user API token activity for the organization.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(50).optional(),
+        query: z.string().optional(),
+      },
+    },
+    async ({ limit, query }) => {
+      try {
+        const orgId = env.ATLASSIAN_ORG_ID?.trim();
+
+        if (!orgId) throw new Error("ATLASSIAN_ORG_ID is missing.");
+
+        const params = new URLSearchParams();
+        params.set("limit", String(limit ?? 25));
+        if (query) params.set("q", query);
+
+        const result = await apiAccessRequest(
+          env,
+          `/orgs/${encodeURIComponent(
+            orgId,
+          )}/api-tokens?${params.toString()}`,
+        );
+
+        return textResult(result);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "admin_invite_user",
+    {
+      description:
+        "Invites a user to the Atlassian organization. Without confirm=true, only returns a preview.",
+      inputSchema: {
+        email: z.string().email(),
+        sendNotification: z.boolean().optional(),
+        confirm: z.boolean().optional(),
+      },
+    },
+    async ({ email, sendNotification, confirm }) => {
+      try {
+        const preview = requireConfirmation(
+          "Invite Atlassian organization user",
+          {
+            email,
+            sendNotification: sendNotification ?? true,
+          },
+          confirm,
+        );
+
+        if (preview) return preview;
+
+        const orgId = env.ATLASSIAN_ORG_ID?.trim();
+
+        if (!orgId) throw new Error("ATLASSIAN_ORG_ID is missing.");
+
+        const result = await adminRequest(
+          env,
+          `/orgs/${encodeURIComponent(orgId)}/users/invite`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              email,
+              sendNotification: sendNotification ?? true,
+            }),
+          },
+        );
+
+        return textResult({
+          executed: true,
+          result,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+
   return server;
 }
 
@@ -2048,6 +2357,8 @@ export default {
               emailConfigured: Boolean(env.ATLASSIAN_EMAIL),
               apiTokenConfigured: Boolean(env.ATLASSIAN_API_TOKEN),
               accessKeyConfigured: Boolean(env.MCP_ACCESS_KEY),
+              organizationIdConfigured: Boolean(env.ATLASSIAN_ORG_ID),
+              adminApiKeyConfigured: Boolean(env.ATLASSIAN_ADMIN_API_KEY),
             },
           },
           null,
@@ -2087,6 +2398,3 @@ export default {
     return createMcpHandler(() => createServer(env))(request, env, ctx);
   },
 };
-
-
-
