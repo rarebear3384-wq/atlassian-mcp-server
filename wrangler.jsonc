@@ -7,6 +7,7 @@
   "workers_dev": true,
   "vars": {
     "ATLASSIAN_SITE_URL": "https://intercoastalnetdesigns.atlassian.net",
-    "ATLASSIAN_EMAIL": "bmenard@icnd.net"
+    "ATLASSIAN_EMAIL": "bmenard@icnd.net",
+    "ATLASSIAN_ORG_ID": "32a1e1e2-d6e0-40b3-9108-6bfa7418d6d9"
   }
 }
